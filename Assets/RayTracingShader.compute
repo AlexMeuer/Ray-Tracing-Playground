@@ -89,6 +89,13 @@ ray_hit trace(const ray ray)
 {
     ray_hit best_hit = create_ray_hit();
     intersect_ground_plane(ray, best_hit);
+    for (int i = -5; i <= 5; i++)
+    {
+        for (int j = 0; j <= 10; j++)
+        {
+            intersect_sphere(ray, best_hit, float4(i * 3, 1, j * 3, 1.0f));
+        }
+    }
     intersect_sphere(ray, best_hit, float4(0, 3.0f, 0, 1.0f));
     return best_hit;
 }

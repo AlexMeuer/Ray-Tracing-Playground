@@ -1,0 +1,146 @@
+#pragma kernel CSMain
+
+RWTexture2D<float4> result;
+float4x4 camera_to_world;
+float4x4 camera_inverse_projection;
+Texture2D<float4> skybox_texture;
+SamplerState sampler_skybox_texture;
+float2 pixel_offset;
+int ray_bounces;
+static const float pi = 3.14159265f;
+
+struct ray
+{
+    float3 origin;
+    float3 direction;
+    float3 energy;
+};
+
+struct ray_hit
+{
+    float3 position;
+    float distance;
+    float3 normal;
+};
+
+ray create_ray(const float3 origin, const float3 direction)
+{
+    ray ray;
+    ray.origin = origin;
+    ray.direction = direction;
+    ray.energy = float3(1.0f, 1.0f, 1.0f);
+    return ray;
+}
+
+ray_hit create_ray_hit()
+{
+    ray_hit hit;
+    hit.position = float3(0.0f, 0.0f, 0.0f);
+    hit.distance = 1.#INF;
+    hit.normal = float3(0.0f, 0.0f, 0.0f);
+    return hit;
+}
+
+ray create_camera_ray(float2 uv)
+{
+    // Transform the camera origin to world space
+    const float3 origin = mul(camera_to_world, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+    
+    // Invert the perspective projection of the view-space position
+    float3 direction = mul(camera_inverse_projection, float4(uv, 0.0f, 1.0f)).xyz;
+    // Transform the direction from camera to world space and normalize
+    direction = mul(camera_to_world, float4(direction, 0.0f)).xyz;
+    direction = normalize(direction);
+
+    return create_ray(origin, direction);
+}
+
+void intersect_ground_plane(ray ray, inout ray_hit best_hit)
+{
+    // Calculate distance along the ray where the ground plane intersected.
+    const float t = -ray.origin.y / ray.direction.y;
+    if (t > 0 && t < best_hit.distance)
+    {
+        best_hit.distance = t;
+        best_hit.position = ray.origin + t * ray.direction;
+        best_hit.normal = float3(0.0f, 1.0f, 0.0f);
+    }
+}
+
+void intersect_sphere(ray ray, inout ray_hit best_hit, float4 sphere)
+{
+    // Calculate distance along the ray where the sphere is intersected
+    const float3 d = ray.origin - sphere.xyz;
+    const float p1 = -dot(ray.direction, d);
+    const float p2_sqr = p1 * p1 - dot(d, d) + sphere.w * sphere.w;
+    if (p2_sqr < 0)
+        return;
+    float p2 = sqrt(p2_sqr);
+    float t = p1 - p2 > 0 ? p1 - p2 : p1 + p2;
+    if (t > 0 && t < best_hit.distance)
+    {
+        best_hit.distance = t;
+        best_hit.position = ray.origin + t * ray.direction;
+        best_hit.normal = normalize(best_hit.position - sphere.xyz);
+    }
+}
+
+ray_hit trace(const ray ray)
+{
+    ray_hit best_hit = create_ray_hit();
+    intersect_ground_plane(ray, best_hit);
+    intersect_sphere(ray, best_hit, float4(0, 3.0f, 0, 1.0f));
+    return best_hit;
+}
+
+float3 shade(inout ray ray, const ray_hit hit)
+{
+    if (hit.distance < 1.#INF)
+    {
+        const float3 specular = float3(0.6f, 0.6f, 0.6f);
+
+        // Reflect the ray and multiply energy with specular reflection
+        ray.origin = hit.position + hit.normal * 0.001f;
+        ray.direction = reflect(ray.direction, hit.normal);
+        ray.energy *= specular;
+
+        // Return nothing
+        return float3(0.0f, 0.0f, 0.0f);
+    } else
+    {
+        // Erase the ray's energy - the sky doesn't reflect
+        ray.energy = 0.0f;
+        
+        // Sample the skybox and write it
+        float theta = acos(ray.direction.y) / -pi;
+        float phi = atan2(ray.direction.x, -ray.direction.z) / -pi * 0.5f;
+        return skybox_texture.SampleLevel(sampler_skybox_texture, float2(phi, theta), 0).xyz;
+    }
+}
+
+[numthreads(8,8,1)]
+// ReSharper disable once CppInconsistentNaming
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    // Get the dimensions of the RenderTexture
+    uint width, height;
+    result.GetDimensions(width, height);
+
+    // Transform pixel to [-1,1] range
+    const float2 uv = float2((id.xy + pixel_offset) / float2(width, height) * 2.0f - 1.0f);
+
+    // Get a ray for the UVs
+    ray ray = create_camera_ray(uv);
+
+    // Trace and shade
+    float3 col = float3(0, 0, 0);
+    for (int i = 0; i < ray_bounces; i++)
+    {
+        ray_hit hit = trace(ray);
+        col += ray.energy * shade(ray, hit);
+
+        if (!any(ray.energy))
+            break;
+    }
+    result[id.xy] = float4(col, 1);
+}

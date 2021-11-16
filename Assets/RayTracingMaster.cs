@@ -1,14 +1,17 @@
 using UnityEngine;
-using UnityEngine.Serialization;
 
 public class RayTracingMaster : MonoBehaviour
 {
     public ComputeShader rayTracingShader;
     public Texture skyboxTexture;
+    public Light directionalLight;
     [Range(1, 8)]
     public  int bounces = 8;
     [HideInInspector]
     public uint currentSample = 0;
+
+    [Range(0.0f, 1.0f)] public float specularMul = 0.04f;
+    [Range(0.0f, 1.0f)] public float albedoMul = 0.8f;
 
     private RenderTexture _target;
     private Camera _camera;
@@ -29,7 +32,7 @@ public class RayTracingMaster : MonoBehaviour
     
     private void Update()
     {
-        if (!transform.hasChanged) return;
+        if (!transform.hasChanged && !directionalLight.transform.hasChanged) return;
         currentSample = 0;
         transform.hasChanged = false;
     }
@@ -41,6 +44,10 @@ public class RayTracingMaster : MonoBehaviour
         rayTracingShader.SetTexture(0, "skybox_texture", skyboxTexture);
         rayTracingShader.SetVector("pixel_offset", new Vector2(Random.value, Random.value));
         rayTracingShader.SetInt("ray_bounces", bounces);
+        var l = directionalLight.transform.forward;
+        rayTracingShader.SetVector("directional_light", new Vector4(l.x, l.y, l.x, directionalLight.intensity));
+        rayTracingShader.SetVector("specular_mul", Vector3.one * specularMul);
+        rayTracingShader.SetVector("albedo_mul", Vector3.one * albedoMul);
     }
 
     private void Render(RenderTexture destination)

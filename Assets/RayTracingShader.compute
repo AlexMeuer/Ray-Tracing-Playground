@@ -7,6 +7,9 @@ Texture2D<float4> skybox_texture;
 SamplerState sampler_skybox_texture;
 float2 pixel_offset;
 int ray_bounces;
+float4 directional_light;
+float3 specular_mul;
+float3 albedo_mul;
 static const float pi = 3.14159265f;
 
 struct ray
@@ -100,27 +103,33 @@ ray_hit trace(const ray ray)
     return best_hit;
 }
 
-float3 shade(inout ray ray, const ray_hit hit)
+float3 shade(inout ray main_ray, const ray_hit hit)
 {
     if (hit.distance < 1.#INF)
     {
-        const float3 specular = float3(0.6f, 0.6f, 0.6f);
-
         // Reflect the ray and multiply energy with specular reflection
-        ray.origin = hit.position + hit.normal * 0.001f;
-        ray.direction = reflect(ray.direction, hit.normal);
-        ray.energy *= specular;
+        main_ray.origin = hit.position + hit.normal * 0.001f;
+        main_ray.direction = reflect(main_ray.direction, hit.normal);
+        main_ray.energy *= specular_mul;
+        
+        // Shadow test ray
+        const ray shadow_ray = create_ray(hit.position + hit.normal * 0.001f, -1 * directional_light.xyz);
+        const ray_hit shadow_hit = trace(shadow_ray);
+        if (shadow_hit.distance != 1.#INF)
+        {
+            return float3(0.0f, 0.0f, 0.0f);
+        }
 
-        // Return nothing
-        return float3(0.0f, 0.0f, 0.0f);
+        // Diffuse
+        return saturate(dot(hit.normal, directional_light.xyz) * -1) * directional_light.w * albedo_mul;
     } else
     {
         // Erase the ray's energy - the sky doesn't reflect
-        ray.energy = 0.0f;
+        main_ray.energy = 0.0f;
         
         // Sample the skybox and write it
-        float theta = acos(ray.direction.y) / -pi;
-        float phi = atan2(ray.direction.x, -ray.direction.z) / -pi * 0.5f;
+        float theta = acos(main_ray.direction.y) / -pi;
+        float phi = atan2(main_ray.direction.x, -main_ray.direction.z) / -pi * 0.5f;
         return skybox_texture.SampleLevel(sampler_skybox_texture, float2(phi, theta), 0).xyz;
     }
 }

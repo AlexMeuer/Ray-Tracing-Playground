@@ -1,27 +1,54 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
+using UnityEngine.Serialization;
+using Random = UnityEngine.Random;
+
+public struct Sphere
+{
+    public const int Size = 40; // bytes
+    public Vector3 Position;
+    public float Radius;
+    public Vector3 Albedo;
+    public Vector3 Specular;
+}
 
 public class RayTracingMaster : MonoBehaviour
 {
     public ComputeShader rayTracingShader;
     public Texture skyboxTexture;
     public Light directionalLight;
+    public Vector2 sphereRadius = new Vector2(3.0f, 8.0f);
+    public uint spheresMax = 100;
+    public float spherePlacementRadius = 100.0f;
+    public bool antialias = true;
     [Range(1, 8)]
     public  int bounces = 8;
     [HideInInspector]
     public uint currentSample = 0;
 
-    [Range(0.0f, 1.0f)] public float specularMul = 0.04f;
-    [Range(0.0f, 1.0f)] public float albedoMul = 0.8f;
-
     private RenderTexture _target;
     private Camera _camera;
     private Material _addMaterial;
+    private ComputeBuffer _sphereBuffer;
     private static readonly int Sample = Shader.PropertyToID("_Sample");
 
 
     private void Awake()
     {
         _camera = GetComponent<Camera>();
+    }
+
+    private void OnEnable()
+    {
+        currentSample = 0;
+        SetUpScene();
+    }
+
+    private void OnDisable()
+    {
+        _sphereBuffer?.Release();
     }
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination)
@@ -42,12 +69,15 @@ public class RayTracingMaster : MonoBehaviour
         rayTracingShader.SetMatrix("camera_to_world", _camera.cameraToWorldMatrix);
         rayTracingShader.SetMatrix("camera_inverse_projection", _camera.projectionMatrix.inverse);
         rayTracingShader.SetTexture(0, "skybox_texture", skyboxTexture);
-        rayTracingShader.SetVector("pixel_offset", new Vector2(Random.value, Random.value));
+        if (antialias)
+        {
+            rayTracingShader.SetVector("pixel_offset", new Vector2(Random.value, Random.value));
+        }
         rayTracingShader.SetInt("ray_bounces", bounces);
         var l = directionalLight.transform.forward;
         rayTracingShader.SetVector("directional_light", new Vector4(l.x, l.y, l.x, directionalLight.intensity));
-        rayTracingShader.SetVector("specular_mul", Vector3.one * specularMul);
-        rayTracingShader.SetVector("albedo_mul", Vector3.one * albedoMul);
+        rayTracingShader.SetInt("num_spheres", _sphereBuffer.count); // Getting size from shader is not supported on Metal (mac).
+        rayTracingShader.SetBuffer(0, "spheres", _sphereBuffer);
     }
 
     private void Render(RenderTexture destination)
@@ -84,5 +114,44 @@ public class RayTracingMaster : MonoBehaviour
         _target.Create();
 
         currentSample = 0;
+    }
+
+    private void SetUpScene()
+    {
+        var spheres = new List<Sphere>();
+        
+        // Add a number of random spheres
+        for (var i = 0; i < spheresMax; ++i)
+        {
+            var randomPos = Random.insideUnitCircle * spherePlacementRadius;
+            var sphere = new Sphere
+            {
+                Radius = sphereRadius.x + Random.value * (sphereRadius.y - sphereRadius.x)
+            };
+            sphere.Position = new Vector3(randomPos.x, sphere.Radius, randomPos.y);
+            
+            // Reject spheres that are intersecting others
+            if ((
+                from other in spheres
+                let minDist = sphere.Radius + other.Radius
+                where Vector3.SqrMagnitude(sphere.Position - other.Position) < minDist * minDist
+                select other
+                ).Any())
+            {
+                continue;
+            }
+            
+            // Albedo and specular color
+            var color = Random.ColorHSV();
+            var metal = Random.value < 0.5f;
+            sphere.Albedo = metal ? Vector3.zero : new Vector3(color.r, color.g, color.b);
+            sphere.Specular = metal ? new Vector3(color.r, color.g, color.b) : Vector3.one * 0.04f;
+            
+            // Add the sphere to the list
+            spheres.Add(sphere);
+        }
+
+        _sphereBuffer = new ComputeBuffer(spheres.Count, Sphere.Size);
+        _sphereBuffer.SetData(spheres);
     }
 }

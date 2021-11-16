@@ -1,4 +1,4 @@
-#pragma kernel CSMain
+#pragma kernel main
 
 RWTexture2D<float4> result;
 float4x4 camera_to_world;
@@ -8,9 +8,17 @@ SamplerState sampler_skybox_texture;
 float2 pixel_offset;
 int ray_bounces;
 float4 directional_light;
-float3 specular_mul;
-float3 albedo_mul;
 static const float pi = 3.14159265f;
+
+struct sphere
+{
+    float3 position;
+    float radius;
+    float3 albedo;
+    float3 specular;
+};
+uint num_spheres;
+StructuredBuffer<sphere> spheres;
 
 struct ray
 {
@@ -24,6 +32,8 @@ struct ray_hit
     float3 position;
     float distance;
     float3 normal;
+    float3 albedo;
+    float3 specular;
 };
 
 ray create_ray(const float3 origin, const float3 direction)
@@ -41,6 +51,8 @@ ray_hit create_ray_hit()
     hit.position = float3(0.0f, 0.0f, 0.0f);
     hit.distance = 1.#INF;
     hit.normal = float3(0.0f, 0.0f, 0.0f);
+    hit.albedo = float3(0.0f, 0.0f, 0.0f);
+    hit.specular = float3(0.0f, 0.0f, 0.0f);
     return hit;
 }
 
@@ -67,24 +79,28 @@ void intersect_ground_plane(ray ray, inout ray_hit best_hit)
         best_hit.distance = t;
         best_hit.position = ray.origin + t * ray.direction;
         best_hit.normal = float3(0.0f, 1.0f, 0.0f);
+        best_hit.albedo = float3(0.4f, 0.4f, 0.4f);
+        best_hit.specular = float3(0.06f, 0.06f, 0.06f);
     }
 }
 
-void intersect_sphere(ray ray, inout ray_hit best_hit, float4 sphere)
+void intersect_sphere(const ray ray, inout ray_hit best_hit, const sphere sphere)
 {
     // Calculate distance along the ray where the sphere is intersected
-    const float3 d = ray.origin - sphere.xyz;
+    const float3 d = ray.origin - sphere.position;
     const float p1 = -dot(ray.direction, d);
-    const float p2_sqr = p1 * p1 - dot(d, d) + sphere.w * sphere.w;
+    const float p2_sqr = p1 * p1 - dot(d, d) + sphere.radius * sphere.radius;
     if (p2_sqr < 0)
         return;
-    float p2 = sqrt(p2_sqr);
-    float t = p1 - p2 > 0 ? p1 - p2 : p1 + p2;
+    const float p2 = sqrt(p2_sqr);
+    const float t = p1 - p2 > 0 ? p1 - p2 : p1 + p2;
     if (t > 0 && t < best_hit.distance)
     {
         best_hit.distance = t;
         best_hit.position = ray.origin + t * ray.direction;
-        best_hit.normal = normalize(best_hit.position - sphere.xyz);
+        best_hit.normal = normalize(best_hit.position - sphere.position);
+        best_hit.albedo = sphere.albedo;
+        best_hit.specular = sphere.specular;
     }
 }
 
@@ -92,14 +108,14 @@ ray_hit trace(const ray ray)
 {
     ray_hit best_hit = create_ray_hit();
     intersect_ground_plane(ray, best_hit);
-    for (int i = -5; i <= 5; i++)
-    {
-        for (int j = 0; j <= 10; j++)
-        {
-            intersect_sphere(ray, best_hit, float4(i * 3, 1, j * 3, 1.0f));
-        }
-    }
-    intersect_sphere(ray, best_hit, float4(0, 3.0f, 0, 1.0f));
+    
+    // Size query not supported on Metal (mac).
+    // uint num_spheres, stride;
+    // spheres.GetDimensions(num_spheres, stride);
+    
+    for (uint i = 0; i < num_spheres; i++)
+        intersect_sphere(ray, best_hit, spheres[i]);
+    
     return best_hit;
 }
 
@@ -110,7 +126,7 @@ float3 shade(inout ray main_ray, const ray_hit hit)
         // Reflect the ray and multiply energy with specular reflection
         main_ray.origin = hit.position + hit.normal * 0.001f;
         main_ray.direction = reflect(main_ray.direction, hit.normal);
-        main_ray.energy *= specular_mul;
+        main_ray.energy *= hit.specular;
         
         // Shadow test ray
         const ray shadow_ray = create_ray(hit.position + hit.normal * 0.001f, -1 * directional_light.xyz);
@@ -121,7 +137,7 @@ float3 shade(inout ray main_ray, const ray_hit hit)
         }
 
         // Diffuse
-        return saturate(dot(hit.normal, directional_light.xyz) * -1) * directional_light.w * albedo_mul;
+        return saturate(dot(hit.normal, directional_light.xyz) * -1) * directional_light.w * hit.albedo;
     } else
     {
         // Erase the ray's energy - the sky doesn't reflect
@@ -130,13 +146,12 @@ float3 shade(inout ray main_ray, const ray_hit hit)
         // Sample the skybox and write it
         float theta = acos(main_ray.direction.y) / -pi;
         float phi = atan2(main_ray.direction.x, -main_ray.direction.z) / -pi * 0.5f;
-        return skybox_texture.SampleLevel(sampler_skybox_texture, float2(phi, theta), 0).xyz;
+        return skybox_texture.SampleLevel(sampler_skybox_texture, float2(phi, theta), 0).xyz * 1.8f;
     }
 }
 
 [numthreads(8,8,1)]
-// ReSharper disable once CppInconsistentNaming
-void CSMain (uint3 id : SV_DispatchThreadID)
+void main (uint3 id : SV_DispatchThreadID)
 {
     // Get the dimensions of the RenderTexture
     uint width, height;
